@@ -1,0 +1,17 @@
+{
+  "runtime": "python",
+  "hooks": {
+    "get-manifest": "python3 scripts/slack_cli_manifest.py",
+    "start": "python3 scripts/slack_cli_write_env.py"
+  },
+  "config": {
+    "sdk-managed-connection-enabled": true,
+    "watch": {
+      "manifest": {
+        "paths": [
+          ".slack/manifest.json"
+        ]
+      }
+    }
+  }
+}

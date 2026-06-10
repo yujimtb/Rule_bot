@@ -1,0 +1,78 @@
+services:
+  answer-service:
+    build: .
+    command: ["python", "-m", "rulebot.answer_service"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DOCS_DIR: /data/docs
+      INDEX_DIR: /data/index
+      MIN_SCORE: "0.08"
+      TOP_K: "3"
+      ANSWER_BACKEND: ${ANSWER_BACKEND:?ANSWER_BACKEND is required}
+      AGENT_CLI_PROVIDER: ${AGENT_CLI_PROVIDER:?AGENT_CLI_PROVIDER is required}
+      AGENT_COMMAND: ${AGENT_COMMAND:?AGENT_COMMAND is required}
+      AGENT_WORKDIR: ${AGENT_WORKDIR:?AGENT_WORKDIR is required}
+      AGENT_QUERY_TIMEOUT_SECONDS: ${AGENT_QUERY_TIMEOUT_SECONDS:?AGENT_QUERY_TIMEOUT_SECONDS is required}
+      AGENT_ANSWER_TIMEOUT_SECONDS: ${AGENT_ANSWER_TIMEOUT_SECONDS:?AGENT_ANSWER_TIMEOUT_SECONDS is required}
+      AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:?AGENT_TIMEOUT_SECONDS is required}
+      CODEX_APP_SERVER_REMOTE_COMPACTION_V2: ${CODEX_APP_SERVER_REMOTE_COMPACTION_V2:?CODEX_APP_SERVER_REMOTE_COMPACTION_V2 is required}
+      CODEX_APP_SERVER_SEED_TIMEOUT_SECONDS: ${CODEX_APP_SERVER_SEED_TIMEOUT_SECONDS:?CODEX_APP_SERVER_SEED_TIMEOUT_SECONDS is required}
+      CODEX_APP_SERVER_ANSWER_TIMEOUT_SECONDS: ${CODEX_APP_SERVER_ANSWER_TIMEOUT_SECONDS:?CODEX_APP_SERVER_ANSWER_TIMEOUT_SECONDS is required}
+      CODEX_APP_SERVER_USAGE_DRAIN_SECONDS: ${CODEX_APP_SERVER_USAGE_DRAIN_SECONDS:?CODEX_APP_SERVER_USAGE_DRAIN_SECONDS is required}
+      CODEX_QUERY_PLANNER_REASONING_EFFORT: ${CODEX_QUERY_PLANNER_REASONING_EFFORT:?CODEX_QUERY_PLANNER_REASONING_EFFORT is required}
+      CODEX_REASONING_EFFORT: ${CODEX_REASONING_EFFORT:?CODEX_REASONING_EFFORT is required}
+      RETRIEVAL_CANDIDATE_TOP_K: ${RETRIEVAL_CANDIDATE_TOP_K:?RETRIEVAL_CANDIDATE_TOP_K is required}
+      ANSWER_CONTEXT_TOP_K: ${ANSWER_CONTEXT_TOP_K:?ANSWER_CONTEXT_TOP_K is required}
+      CODEX_DEFAULT_MODEL: ${CODEX_DEFAULT_MODEL:?CODEX_DEFAULT_MODEL is required}
+      CLAUDE_MODEL: ${CLAUDE_MODEL}
+      CLAUDE_PERMISSION_MODE: ${CLAUDE_PERMISSION_MODE:?CLAUDE_PERMISSION_MODE is required}
+      CLAUDE_EXTRA_ARGS: ${CLAUDE_EXTRA_ARGS}
+      INIT_CODEX_CONFIG: "1"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./docs:/data/docs:ro
+      - ./index:/data/index
+      - codex-home:/home/appuser/.codex
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  slack-bot:
+    build: .
+    profiles:
+      - slack
+    command: ["python", "-m", "rulebot.slack_bot"]
+    environment:
+      ANSWER_SERVICE_URL: http://answer-service:8080/answer
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:?SLACK_BOT_TOKEN is required}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:?SLACK_APP_TOKEN is required}
+      SLACK_MESSAGES_CONFIG: /app/config/slack_messages.json
+      ANSWER_SERVICE_TIMEOUT_SECONDS: ${ANSWER_SERVICE_TIMEOUT_SECONDS:?ANSWER_SERVICE_TIMEOUT_SECONDS is required}
+      AGENT_MONTHLY_TOKEN_LIMIT: ${AGENT_MONTHLY_TOKEN_LIMIT:?AGENT_MONTHLY_TOKEN_LIMIT is required}
+      AGENT_MONTHLY_QUOTA_USERS: ${AGENT_MONTHLY_QUOTA_USERS:?AGENT_MONTHLY_QUOTA_USERS is required}
+      AGENT_USAGE_DB_PATH: /home/appuser/usage/agent_usage.sqlite3
+      TOKEN_QUOTA_TIMEZONE: ${TOKEN_QUOTA_TIMEZONE:?TOKEN_QUOTA_TIMEZONE is required}
+      INIT_CODEX_CONFIG: "0"
+    depends_on:
+      - answer-service
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./config:/app/config:ro
+      - slack-usage-data:/home/appuser/usage
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+volumes:
+  codex-home:
+  slack-usage:
+  slack-usage-data:
