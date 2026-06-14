@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "openspec": "openspec",
+    "openspec:list": "openspec list",
+    "openspec:validate": "openspec validate --all --strict --no-interactive"
+  },
+  "devDependencies": {
+    "@fission-ai/openspec": "1.4.1"
+  }
+}

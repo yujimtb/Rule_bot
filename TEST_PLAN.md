@@ -18,6 +18,19 @@ python -m unittest discover -s tests
 - 未記載質問では推測せず「現行ドキュメントでは確認できません」と返す。
 - Slack表示用テキストに`回答`、`根拠`、`不明な点`が含まれる。
 
+OpenSpec確認:
+
+```powershell
+npm install
+npm run openspec -- list
+npm run openspec:validate
+```
+
+合格基準:
+
+- OpenSpec CLIが起動する。
+- 未作成の変更・仕様がない初期状態でも検証コマンドが失敗しない。
+
 ## 2. 回答サービス単体テスト
 
 目的: HTTP APIとして回答できることを確認する。
