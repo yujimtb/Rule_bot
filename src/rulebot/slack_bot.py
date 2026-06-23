@@ -259,19 +259,15 @@ def build_app():
     messages = load_slack_messages()
     quota_store = MonthlyQuotaStore.from_env()
 
-    @app.event("app_mention")
-    def handle_app_mention(event: dict[str, Any], client: Any, logger: logging.Logger) -> None:
-        question = extract_question(event)
-        channel = event["channel"]
-        user_id = str(event.get("user", "unknown"))
-        thread_ts = event.get("thread_ts") or event["ts"]
-        logger.info(
-            "received app_mention channel=%s user=%s ts=%s empty=%s",
-            channel,
-            user_id,
-            event.get("ts"),
-            not question,
-        )
+    def answer_to_slack(
+        *,
+        question: str,
+        channel: str,
+        user_id: str,
+        thread_ts: str,
+        client: Any,
+        logger: logging.Logger,
+    ) -> None:
         progress = client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
@@ -307,6 +303,45 @@ def build_app():
             ts=progress_ts,
             text=text,
             error_text=messages["answer_error_message"],
+            logger=logger,
+        )
+
+    @app.event("app_mention")
+    def handle_app_mention(event: dict[str, Any], client: Any, logger: logging.Logger) -> None:
+        question = extract_question(event)
+        channel = event["channel"]
+        user_id = str(event.get("user", "unknown"))
+        thread_ts = event.get("thread_ts") or event["ts"]
+        logger.info(
+            "received app_mention channel=%s user=%s ts=%s empty=%s",
+            channel,
+            user_id,
+            event.get("ts"),
+            not question,
+        )
+        answer_to_slack(
+            question=question,
+            channel=channel,
+            user_id=user_id,
+            thread_ts=str(thread_ts),
+            client=client,
+            logger=logger,
+        )
+
+    @app.command("/workspace-search")
+    def handle_workspace_search_command(ack: Any, body: dict[str, Any], client: Any, logger: logging.Logger) -> None:
+        ack()
+        question = str(body.get("text", "")).strip()
+        channel = str(body["channel_id"])
+        user_id = str(body.get("user_id", "unknown"))
+        thread_ts = str(body.get("thread_ts") or body.get("trigger_id", ""))
+        logger.info("received workspace-search slash command channel=%s user=%s empty=%s", channel, user_id, not question)
+        answer_to_slack(
+            question=question,
+            channel=channel,
+            user_id=user_id,
+            thread_ts=thread_ts,
+            client=client,
             logger=logger,
         )
 
