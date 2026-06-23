@@ -65,6 +65,42 @@ def _answer_with_search_agent(question: str, docs_dir: Path, index_dir: Path) ->
     return data
 
 
+def compose_workspace_answer(question: str, snippets: list[str], citations: list[dict[str, str]]) -> dict[str, Any]:
+    prompt = _build_workspace_compose_prompt(question, snippets, citations)
+    data = _run_codex(prompt)
+    if data.get("error_type"):
+        return data
+    answer = str(data.get("answer", "")).strip()
+    if not answer:
+        data["answer"] = "一次ソースで確認できる範囲では回答を特定できませんでした。"
+    data.setdefault("unknowns", [])
+    data.setdefault("confidence", "medium")
+    return data
+
+
+def _build_workspace_compose_prompt(question: str, snippets: list[str], citations: list[dict[str, str]]) -> str:
+    evidence = "\n\n".join(
+        f"[{index}] url={citation.get('url', '')} record_id={citation.get('record_id', '')} "
+        f"source_type={citation.get('source_type', '')}\n{_trim(snippet, limit=1200)}"
+        for index, (snippet, citation) in enumerate(zip(snippets, citations, strict=False), start=1)
+        if snippet.strip()
+    )
+    return f"""あなたはワークスペース検索 Bot の回答合成器です。
+検証済み一次ソース snippets だけを根拠に、日本語で簡潔に回答してください。
+過去の Bot 回答や外部知識は根拠にしないでください。
+根拠 snippets にない内容は unknowns に入れてください。
+
+出力は必ず JSON のみです。形式:
+{{"answer":"回答本文","unknowns":["不明点"],"confidence":"high|medium|low"}}
+
+質問:
+{question}
+
+検証済み一次ソース snippets:
+{evidence or "なし"}
+"""
+
+
 def _run_codex_app_server(question: str, docs_dir: Path) -> dict[str, Any]:
     try:
         result = answer_with_codex_app_server(question, docs_dir)

@@ -58,7 +58,7 @@ class AccessControlledProjection:
     def _redact_form_response(self, record: WorkspaceRecord) -> WorkspaceRecord:
         metadata = dict(record.metadata)
         responder = str(metadata.get("responder_id") or metadata.get("responder_email") or "unknown")
-        form_title = record.source_title or str(metadata.get("form_title", "Form"))
+        form_title = str(metadata.get("form_title") or record.source_title or "Form")
         answered_at = record.timestamp
         safe_text = f"{responder} answered {form_title} at {answered_at}."
         metadata.pop("answers", None)

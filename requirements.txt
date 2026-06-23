@@ -1,2 +1,2 @@
+PyYAML>=6.0,<7
 slack-bolt>=1.18,<2
-

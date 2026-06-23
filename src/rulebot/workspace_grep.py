@@ -7,6 +7,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from .workspace_records import WorkspaceRecord
 
@@ -77,7 +78,7 @@ class GrepResponse:
 
 class GrepIndex:
     def __init__(self, records: list[WorkspaceRecord], *, projection_watermark: str = ""):
-        self.records = sorted(records, key=lambda record: record.timestamp, reverse=True)
+        self.records = sorted(records, key=lambda record: (record.timestamp, record.record_id), reverse=True)
         self.projection_watermark = projection_watermark
         self._normalized = {record.record_id: normalize_text(record.text) for record in self.records}
         self.trigram_index = self._build_trigram_index()
@@ -96,29 +97,34 @@ class GrepIndex:
             raise ValueError("regex pattern uses unsupported non-linear features")
 
         regex = re.compile(normalize_text(request.pattern), re.IGNORECASE)
-        offset = _decode_cursor(request.cursor)
+        cursor_key = _decode_cursor(request.cursor)
         candidates = self._filtered_records(request.filters)
         deadline = time.monotonic() + request.timeout_ms / 1000
         matches: list[GrepMatch] = []
-        next_offset = len(candidates)
+        last_match: WorkspaceRecord | None = None
+        stopped_at_limit = False
 
-        for index in range(offset, len(candidates)):
+        for record in candidates:
+            if cursor_key is not None and _record_key(record) >= cursor_key:
+                continue
             if time.monotonic() > deadline:
                 raise TimeoutError("grep execution timed out")
-            record = candidates[index]
             text = self._normalized[record.record_id]
             found = list(regex.finditer(text))
             if not found:
                 continue
             matches.append(_match_from_record(record, found))
+            last_match = record
             if len(matches) >= request.limit:
-                next_offset = index + 1
+                stopped_at_limit = True
                 break
 
-        complete = next_offset >= len(candidates)
+        complete = not stopped_at_limit
+        if stopped_at_limit and last_match is not None:
+            complete = not any(_record_key(record) < _record_key(last_match) for record in candidates)
         return GrepResponse(
             matches=matches,
-            next_cursor="" if complete else _encode_cursor(next_offset),
+            next_cursor="" if complete or last_match is None else _encode_cursor(last_match),
             complete=complete,
             projection_watermark=self.projection_watermark,
         )
@@ -138,8 +144,9 @@ class GrepIndex:
         ]
 
     def resolve_link(self, url: str) -> WorkspaceRecord | None:
+        needle = _url_key(url)
         for record in self.records:
-            if record.anchor_url == url or url.startswith(record.anchor_url) or record.anchor_url.startswith(url):
+            if record.anchor_url == url or _url_key(record.anchor_url) == needle:
                 return record
         return None
 
@@ -217,19 +224,32 @@ def _snippet(text: str, start: int, end: int, *, radius: int = 80) -> str:
     return f"{prefix}{text[left:right]}{suffix}".replace("\n", " ").strip()
 
 
-def _encode_cursor(offset: int) -> str:
-    raw = json.dumps({"offset": offset}, separators=(",", ":")).encode("utf-8")
+def _record_key(record: WorkspaceRecord) -> tuple[str, str]:
+    return record.timestamp, record.record_id
+
+
+def _encode_cursor(record: WorkspaceRecord) -> str:
+    raw = json.dumps({"ts": record.timestamp, "id": record.record_id}, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
-def _decode_cursor(cursor: str) -> int:
+def _decode_cursor(cursor: str) -> tuple[str, str] | None:
     if not cursor:
-        return 0
+        return None
     try:
         data = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8"))
-        offset = int(data["offset"])
+        timestamp = str(data["ts"])
+        record_id = str(data["id"])
     except Exception as exc:  # noqa: BLE001
         raise ValueError("invalid cursor") from exc
-    if offset < 0:
+    if not record_id:
         raise ValueError("invalid cursor")
-    return offset
+    return timestamp, record_id
+
+
+def _url_key(url: str) -> tuple[str, str, str, str]:
+    parsed = urlparse(url)
+    path = parsed.path
+    if path != "/":
+        path = path.rstrip("/")
+    return parsed.scheme.lower(), parsed.netloc.lower(), path or "/", parsed.query

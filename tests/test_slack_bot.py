@@ -81,6 +81,12 @@ class SlackBotTest(unittest.TestCase):
         self.assertLessEqual(len(text.encode("utf-8")), 120)
         self.assertTrue(text.endswith(TRUNCATION_NOTICE))
 
+    def test_fit_slack_text_does_not_split_multibyte_boundary(self) -> None:
+        text = fit_slack_text("あい", limit=10, max_bytes=4, max_json_bytes=1000)
+
+        self.assertEqual(text, "あ")
+        self.assertLessEqual(len(text.encode("utf-8")), 4)
+
     def test_fit_slack_text_truncates_by_json_escaped_bytes(self) -> None:
         text = fit_slack_text("あ" * 100, limit=1000, max_bytes=1000, max_json_bytes=500)
 

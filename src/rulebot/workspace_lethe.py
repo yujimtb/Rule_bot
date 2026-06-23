@@ -38,11 +38,14 @@ class LetheLakeWriter(Protocol):
 
 
 class HttpLetheClient:
-    def __init__(self, base_url: str, service_token: str | None = None):
+    def __init__(self, base_url: str, service_token: str | None = None, *, timeout_seconds: float = 30.0):
         self.base_url = base_url.rstrip("/")
         self.service_token = service_token if service_token is not None else os.environ.get("LETHE_SERVICE_TOKEN", "")
         if not self.service_token:
             raise ValueError("LETHE_SERVICE_TOKEN must not be empty")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self.timeout_seconds = timeout_seconds
 
     def grep(self, projection_id: str, request: GrepRequest, *, slack_user_id: str = "") -> GrepResponse:
         from .workspace_grep import GrepMatch, GrepResponse
@@ -145,11 +148,13 @@ class HttpLetheClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"LETHE API returned {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"LETHE API request failed: {exc}") from exc
         if not isinstance(data, dict):
             raise RuntimeError("LETHE API returned non-object JSON")
         return data
