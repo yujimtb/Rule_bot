@@ -8,6 +8,12 @@ from typing import Any
 
 
 DEFAULT_CHANNEL_ALLOW_REGEX = r"^\d{3}_"
+DEFAULT_VARIANT_GROUPS = (
+    ("落とし物", "忘れ物", "遺失物"),
+    ("フォーム", "form", "Form"),
+    ("締切", "〆切", "期限", "提出期限"),
+    ("イベント", "event", "行事"),
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,7 @@ class WorkspaceSearchConfig:
     excluded_drive_file_ids: frozenset[str] = frozenset()
     exclude_form_response_sheets: bool = True
     show_internal_metadata_to_user: bool = False
+    variant_groups: tuple[tuple[str, ...], ...] = DEFAULT_VARIANT_GROUPS
     slack: SlackIngestionConfig = field(default_factory=SlackIngestionConfig)
     drive: DriveCrawlConfig = field(default_factory=DriveCrawlConfig)
     agent: AgentLimits = field(default_factory=AgentLimits)
@@ -68,6 +75,9 @@ class WorkspaceSearchConfig:
             re.compile(self.channel_allow_regex)
         except re.error as exc:
             raise ValueError("channel_allow_regex must be a valid regex") from exc
+        for index, group in enumerate(self.variant_groups):
+            if not group:
+                raise ValueError(f"variant_groups[{index}] must not be empty")
 
 
 def load_workspace_search_config(path: str | Path) -> WorkspaceSearchConfig:
@@ -101,6 +111,7 @@ def workspace_search_config_from_dict(data: dict[str, Any]) -> WorkspaceSearchCo
         excluded_drive_file_ids=frozenset(_string_set(data.get("excluded_drive_file_ids", []), "excluded_drive_file_ids")),
         exclude_form_response_sheets=bool(data.get("exclude_form_response_sheets", True)),
         show_internal_metadata_to_user=bool(data.get("show_internal_metadata_to_user", False)),
+        variant_groups=_variant_groups(data.get("variant_groups", DEFAULT_VARIANT_GROUPS)),
         slack=SlackIngestionConfig(
             global_interval_seconds=int(slack_data.get("global_interval_seconds", 900)),
             channel_interval_overrides={
@@ -126,48 +137,17 @@ def _load_mapping(path: Path) -> dict[str, Any]:
     if path.suffix.lower() == ".json":
         data = json.loads(text)
     else:
-        data = _parse_yaml_subset(text)
+        data = _parse_yaml(text)
     return _require_mapping(data, str(path))
 
 
-def _parse_yaml_subset(text: str) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    stack: list[tuple[int, dict[str, Any]]] = [(-1, result)]
-    for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        key, sep, raw_value = line.strip().partition(":")
-        if not sep or not key:
-            raise ValueError(f"unsupported YAML line: {raw_line}")
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        parent = stack[-1][1]
-        value = raw_value.strip()
-        if value == "":
-            child: dict[str, Any] = {}
-            parent[key] = child
-            stack.append((indent, child))
-        else:
-            parent[key] = _parse_scalar(value)
-    return result
-
-
-def _parse_scalar(value: str) -> Any:
-    if value.startswith("[") and value.endswith("]"):
-        inner = value[1:-1].strip()
-        if not inner:
-            return []
-        return [_parse_scalar(item.strip()) for item in inner.split(",")]
-    if value.lower() in {"true", "false"}:
-        return value.lower() == "true"
-    if value.startswith(("'", '"')) and value.endswith(("'", '"')):
-        return value[1:-1]
+def _parse_yaml(text: str) -> dict[str, Any]:
     try:
-        return int(value)
-    except ValueError:
-        return value
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to read YAML workspace_search config") from exc
+    data = yaml.safe_load(text)
+    return {} if data is None else data
 
 
 def _require_mapping(value: Any, name: str) -> dict[str, Any]:
@@ -182,3 +162,21 @@ def _string_set(value: Any, name: str) -> set[str]:
     if not isinstance(value, list | tuple | set | frozenset):
         raise ValueError(f"{name} must be a list of strings")
     return {str(item) for item in value if str(item)}
+
+
+def _variant_groups(value: Any) -> tuple[tuple[str, ...], ...]:
+    if isinstance(value, dict):
+        raw_groups = list(value.values())
+    else:
+        raw_groups = value
+    if not isinstance(raw_groups, list | tuple):
+        raise ValueError("variant_groups must be a list of string lists or a mapping of string lists")
+    groups: list[tuple[str, ...]] = []
+    for index, group in enumerate(raw_groups):
+        if not isinstance(group, list | tuple | set | frozenset):
+            raise ValueError(f"variant_groups[{index}] must be a list of strings")
+        normalized = tuple(str(item) for item in group if str(item))
+        if not normalized:
+            raise ValueError(f"variant_groups[{index}] must not be empty")
+        groups.append(normalized)
+    return tuple(groups)

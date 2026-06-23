@@ -1,22 +1,19 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Protocol
 
 from .workspace_answer_log import AnswerLogEntry, Citation, JsonlAnswerLog
-from .workspace_config import AgentLimits
+from .workspace_config import DEFAULT_VARIANT_GROUPS, AgentLimits
 from .workspace_mcp import WorkspaceMcpTools
 from .workspace_records import stable_record_id
 
 
-VARIANT_GROUPS = (
-    ("落とし物", "忘れ物", "遺失物"),
-    ("フォーム", "form", "Form"),
-    ("締切", "〆切", "期限", "提出期限"),
-    ("イベント", "event", "行事"),
-)
+LOGGER = logging.getLogger("rulebot.workspace_agent")
 
 
 @dataclass(frozen=True)
@@ -38,6 +35,34 @@ class AnswerEnvelope:
         return f"{self.answer}\n\nSources:\n{sources}"
 
 
+@dataclass(frozen=True)
+class ComposedAnswer:
+    answer: str
+    usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
+    confidence: str = "medium"
+    unknowns: list[str] = field(default_factory=list)
+
+
+class AnswerComposer(Protocol):
+    def __call__(self, question: str, snippets: list[str], citations: list[Citation]) -> ComposedAnswer:
+        ...
+
+
+class CodexAnswerComposer:
+    def __call__(self, question: str, snippets: list[str], citations: list[Citation]) -> ComposedAnswer:
+        from .codex_agent import compose_workspace_answer
+
+        data = compose_workspace_answer(question, snippets, [citation.__dict__ for citation in citations])
+        if data.get("error_type"):
+            raise RuntimeError(str(data.get("unknowns") or data.get("error_type")))
+        return ComposedAnswer(
+            answer=str(data.get("answer", "")).strip(),
+            usage={str(key): int(value) for key, value in dict(data.get("usage", {})).items()},
+            confidence=str(data.get("confidence", "medium")),
+            unknowns=[str(item) for item in data.get("unknowns", [])],
+        )
+
+
 class WorkspaceSearchAgent:
     def __init__(
         self,
@@ -46,11 +71,17 @@ class WorkspaceSearchAgent:
         limits: AgentLimits | None = None,
         answer_log: JsonlAnswerLog | None = None,
         model: str = "grep-react",
+        variant_groups: tuple[tuple[str, ...], ...] = DEFAULT_VARIANT_GROUPS,
+        answer_composer: AnswerComposer | None = None,
     ):
         self.tools = tools
         self.limits = limits or AgentLimits()
         self.answer_log = answer_log
         self.model = model
+        self.variant_groups = variant_groups
+        self.answer_composer = answer_composer
+        if self.answer_composer is None and model == "codex-workspace":
+            self.answer_composer = CodexAnswerComposer()
 
     def answer(self, question: str, *, slack_user_id: str) -> AnswerEnvelope:
         question = question.strip()
@@ -79,7 +110,7 @@ class WorkspaceSearchAgent:
                 citations.append(_citation_from_record(resolved))
                 snippets.append(str(resolved.get("text", ""))[:240])
 
-        for pattern in build_regex_patterns(question):
+        for pattern in build_regex_patterns(question, self.variant_groups):
             if tool_calls >= self.limits.max_tool_calls or time.monotonic() > deadline:
                 break
             cursor = ""
@@ -110,22 +141,41 @@ class WorkspaceSearchAgent:
         if not unique_citations:
             envelope = self._unknown(question, slack_user_id, ["Primary source could not be verified."], used_queries=used_queries)
         else:
+            composition = self._compose_verified_answer(question, snippets, unique_citations)
             envelope = AnswerEnvelope(
-                answer=_compose_answer(question, snippets),
+                answer=composition.answer,
                 citations=unique_citations,
                 used_queries=used_queries,
                 asker=slack_user_id,
                 ts=datetime.now(timezone.utc).isoformat(),
                 model=self.model,
-                usage={"input_tokens": 0, "output_tokens": 0},
-                confidence="medium",
-                unknowns=[],
+                usage=composition.usage,
+                confidence=composition.confidence,
+                unknowns=composition.unknowns,
                 snippet="\n".join(snippets[:3]),
                 prior_answer_ids=[item for item in prior_answer_ids if item],
             )
         if self.answer_log is not None:
             self.answer_log.append(_log_entry(question, envelope))
         return envelope
+
+    def _compose_verified_answer(self, question: str, snippets: list[str], citations: list[Citation]) -> ComposedAnswer:
+        if self.answer_composer is None:
+            return _compose_degraded_answer(question, snippets)
+        try:
+            composition = self.answer_composer(question, snippets, citations)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("workspace answer composer failed; using degraded mode: %s", exc)
+            degraded = _compose_degraded_answer(question, snippets)
+            return ComposedAnswer(
+                answer=degraded.answer,
+                usage=degraded.usage,
+                confidence="low",
+                unknowns=[*degraded.unknowns, "Codex answer composition failed; degraded mode used."],
+            )
+        if not composition.answer.strip():
+            return _compose_degraded_answer(question, snippets)
+        return composition
 
     def _unknown(
         self,
@@ -148,10 +198,10 @@ class WorkspaceSearchAgent:
         )
 
 
-def build_regex_patterns(question: str) -> list[str]:
+def build_regex_patterns(question: str, variant_groups: tuple[tuple[str, ...], ...] = DEFAULT_VARIANT_GROUPS) -> list[str]:
     words = [word for word in re.split(r"\s+", question) if word]
     patterns: list[str] = []
-    for group in VARIANT_GROUPS:
+    for group in variant_groups:
         if any(item.casefold() in question.casefold() for item in group):
             patterns.append("|".join(re.escape(item) for item in group))
     for word in words:
@@ -165,11 +215,11 @@ def is_human_trigger(event: dict[str, object]) -> bool:
     return (event.get("type") in {"app_mention", "slash_command"}) and not bool(event.get("bot_id"))
 
 
-def _compose_answer(question: str, snippets: list[str]) -> str:
+def _compose_degraded_answer(question: str, snippets: list[str]) -> ComposedAnswer:
     compact = " ".join(snippet.strip() for snippet in snippets if snippet.strip())
     if not compact:
-        return "一次ソースを確認しました。"
-    return f"確認できた一次ソースでは、{compact[:500]}"
+        return ComposedAnswer(answer="一次ソースを確認しました。", confidence="low")
+    return ComposedAnswer(answer=f"確認できた一次ソースでは、{compact[:500]}", confidence="low")
 
 
 def _citation_from_record(record: dict[str, object]) -> Citation:

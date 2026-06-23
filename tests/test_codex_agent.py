@@ -164,6 +164,23 @@ class CodexAgentTest(unittest.TestCase):
         self.assertEqual(data["answer"], "ok")
         self.assertFalse(data["usage_chargeable"])
 
+    def test_compose_workspace_answer_calls_codex_with_verified_sources(self) -> None:
+        with patch(
+            "rulebot.codex_agent._run_codex",
+            return_value={"answer": "金曜です。", "unknowns": [], "confidence": "high", "usage": {"input_tokens": 3, "output_tokens": 2}},
+        ) as run:
+            data = codex_agent.compose_workspace_answer(
+                "提出期限は？",
+                ["提出期限は金曜です。"],
+                [{"url": "https://doc", "record_id": "r1", "source_type": "doc"}],
+            )
+
+        prompt = run.call_args.args[0]
+        self.assertEqual(data["answer"], "金曜です。")
+        self.assertIn("検証済み一次ソース", prompt)
+        self.assertIn("https://doc", prompt)
+        self.assertIn("提出期限は金曜", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
